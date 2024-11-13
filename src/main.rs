@@ -1,14 +1,28 @@
 use clap::{Parser, Subcommand};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::{
+    style::Stylize,
+    symbols::border,
+    text::{Line, Text},
+    widgets::{Block, Paragraph, Widget},
+    DefaultTerminal, Frame,
+};
 use rodio::{Decoder, OutputStream, Sink};
 use serde::{Deserialize, Serialize};
 
-use std::fs::File;
-use std::io::{BufReader, Write};
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
+use std::sync::mpsc::channel;
 use std::{env, fs, io};
+use std::{fs::File, time::Duration};
+use std::{
+    io::{BufReader, Write},
+    sync::{Arc, Mutex},
+};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 struct Song {
     artist: String,
     path: String,
@@ -31,6 +45,228 @@ struct Library {
     streams: Vec<u32>,
 }
 
+#[derive(Default)]
+pub struct RApp {
+    current_playing: Song,
+    exit: bool,
+    looping: bool,
+    is_playing: bool,
+}
+
+enum Actions {
+    Playing,
+    Paused,
+    Skip,
+    Back,
+    Loop,
+    NoLoop,
+}
+
+fn make_source(path: &str) -> Option<Decoder<BufReader<File>>> {
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => {
+            return None;
+        }
+    };
+
+    let buf = BufReader::new(f);
+
+    Some(Decoder::new(buf).unwrap())
+}
+
+impl RApp {
+    fn draw(&self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+    }
+
+    fn run(&mut self, songs: &Vec<Song>, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+        let sink = Sink::try_new(&stream_handle).unwrap();
+
+        sink.play();
+
+        self.is_playing = true;
+        self.looping = false;
+
+        let mut songs = songs.clone();
+        songs.shuffle(&mut thread_rng());
+
+        let (sender, reciever) = channel();
+        let i_original = Arc::new(Mutex::new(0 as usize));
+
+        // thrread vars
+        let t_songs = songs.clone();
+        let t_i = i_original.clone();
+        std::thread::spawn(move || {
+            let mut looping = false;
+            let source = make_source(&t_songs[*t_i.lock().unwrap()].path).unwrap();
+            sink.append(source);
+            sink.play();
+
+            loop {
+                match reciever.recv_timeout(Duration::from_millis(5)) {
+                    Ok(action) => match action {
+                        Actions::Back => {
+                            let mut i = t_i.lock().unwrap();
+
+                            if *i != 0 {
+                                *i = *i - 1;
+                                let source = make_source(&t_songs[*i].path).unwrap();
+                                sink.append(source);
+                                sink.skip_one();
+                            }
+                        }
+                        Actions::Skip => {
+                            let mut i = t_i.lock().unwrap();
+
+                            if looping && (*i + 1) == t_songs.len() {
+                                *i = 0;
+                            } else if *i < t_songs.len() - 1 {
+                                *i = *i + 1;
+                            }
+                            let source = make_source(&t_songs[*i].path).unwrap();
+                            sink.append(source);
+                            sink.skip_one();
+                        }
+                        Actions::Loop => looping = true,
+                        Actions::NoLoop => looping = false,
+                        Actions::Paused => sink.pause(),
+                        Actions::Playing => sink.play(),
+                    },
+                    Err(_) => {} // assuming its just a timeout error and not something else
+                }
+
+                if sink.len() == 0 {
+                    let mut i = t_i.lock().unwrap();
+
+                    *i += 1;
+
+                    if *i == t_songs.len() {
+                        if looping {
+                            *i = 0;
+                        } else {
+                            ratatui::restore();
+                            exit(0);
+                        }
+                    }
+                    let source = make_source(&t_songs[*i].path).unwrap();
+                    sink.append(source);
+                    sink.play();
+                }
+            }
+        });
+
+        while !self.exit {
+            self.current_playing = songs[*i_original.lock().unwrap()].clone();
+            terminal.draw(|frame| self.draw(frame))?;
+            // self.handle_events()?;
+            if event::poll(Duration::from_millis(5))? {
+                match event::read()? {
+                    Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                        match key_event.code {
+                            KeyCode::Char('q') => self.exit(),
+                            KeyCode::Left => {
+                                sender.send(Actions::Back).unwrap();
+                            }
+                            KeyCode::Right => {
+                                sender.send(Actions::Skip).unwrap();
+                            }
+                            KeyCode::Char(' ') => {
+                                self.is_playing = !self.is_playing;
+                                if self.is_playing {
+                                    sender.send(Actions::Playing).unwrap();
+                                } else {
+                                    sender.send(Actions::Paused).unwrap();
+                                }
+                            }
+                            KeyCode::Char('l') => {
+                                self.looping = !self.looping;
+                                if self.looping {
+                                    sender.send(Actions::Loop).unwrap();
+                                } else {
+                                    sender.send(Actions::NoLoop).unwrap();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn exit(&mut self) {
+        self.exit = true;
+    }
+}
+
+impl Widget for &RApp {
+    fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
+    where
+        Self: Sized,
+    {
+        let title = Line::from(" Music TUI ".bold());
+        let instructions = Line::from(vec![
+            " Pause ".into(),
+            "<Space>".blue().bold(),
+            " Skip ".into(),
+            "<Right>".blue().bold(),
+            " Quit ".into(),
+            "<Q>".blue().bold(),
+            " Loop ".into(),
+            "<L>".blue().bold(),
+        ]);
+        let block = Block::bordered()
+            .title(title.centered())
+            .title_bottom(instructions.centered())
+            .border_set(border::THICK);
+
+        let l1 = Line::from(vec![
+            "Playing: ".into(),
+            self.current_playing.name.clone().into(),
+        ]);
+        let l2 = Line::from(vec![
+            "By: ".into(),
+            self.current_playing.artist.clone().yellow().into(),
+        ]);
+        let l3 = Line::from(vec![
+            "Looping: ".into(),
+            if self.looping {
+                "LIB".yellow().into()
+            } else {
+                "OFF".yellow().into()
+            },
+        ]);
+        let l4 = Line::from(vec![if self.is_playing {
+            "Playing".yellow().into()
+        } else {
+            "Paused".yellow().into()
+        }]);
+
+        let song_text = Text::from(vec![l1, l2, l3, l4]);
+
+        // let chunks = Layout::default()
+        //     .direction(Direction::Vertical)
+        //     .constraints([Constraint::Length(3), Constraint::Min(1)])
+        //     .split(area);
+
+        // Gauge::default()
+        //     .block(Block::bordered().title("progress"))
+        //     .gauge_style(Style::new().white().on_black().italic())
+        //     .ratio(1.0 / self.prog.as_secs() as f64)
+        //     .render(chunks[0], buf);
+
+        Paragraph::new(song_text)
+            .centered()
+            .block(block)
+            .render(area, buf);
+    }
+}
+
 impl Library {
     // create an empty library
     fn new() -> Library {
@@ -44,7 +280,7 @@ impl Library {
         self.songs.push(song);
     }
 
-    fn play(&self) {
+    fn play_w_shell(&self) {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = Sink::try_new(&stream_handle).unwrap();
         sink.pause();
@@ -137,7 +373,7 @@ impl Library {
                     println!("quitting...");
                     exit(0);
                 }
-                _ => match Command::new(tokens[0]).args(&tokens[1..]).output() {
+                _ => match Command::new("fish").arg("--command").arg(line).output() {
                     Ok(o) => {
                         println!(
                             "{}{}",
@@ -154,7 +390,7 @@ impl Library {
             }
         }
         if looping {
-            self.play();
+            self.play_w_shell();
         }
     }
 }
@@ -247,7 +483,10 @@ enum Commands {
     List {},
 
     // Plays the songs in the library
-    Play {},
+    Play {
+        #[arg(long)]
+        with_tui: bool,
+    },
 
     // Deletes the specified song in the library
     Delete {
@@ -315,9 +554,20 @@ fn main() {
                 println!("\t{}. {} - {}", i, s.name, s.artist);
             }
         }
-        Commands::Play {} => {
+        Commands::Play { with_tui } => {
             // todo!("do the play features");
-            library.play();
+            if *with_tui {
+                let mut terminal = ratatui::init();
+                match RApp::default().run(&library.songs, &mut terminal) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("error running stuff!; {e}");
+                    }
+                }
+                ratatui::restore();
+            } else {
+                library.play_w_shell();
+            }
         }
         Commands::Delete { name } => {
             println!("Delete from list: {name}");
