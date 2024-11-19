@@ -83,7 +83,7 @@ impl RApp {
         frame.render_widget(self, frame.area());
     }
 
-    fn run(&mut self, songs: &Vec<Song>, terminal: &mut DefaultTerminal) -> io::Result<()> {
+    fn run(&mut self, songs: &[Song], terminal: &mut DefaultTerminal) -> io::Result<()> {
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let sink = Sink::try_new(&stream_handle).unwrap();
 
@@ -92,11 +92,11 @@ impl RApp {
         self.is_playing = true;
         self.looping = false;
 
-        let mut songs = songs.clone();
+        let mut songs = songs.to_owned();
         songs.shuffle(&mut thread_rng());
 
         let (sender, reciever) = channel();
-        let i_original = Arc::new(Mutex::new(0 as usize));
+        let i_original = Arc::new(Mutex::new(0));
 
         // thrread vars
         let t_songs = songs.clone();
@@ -111,13 +111,13 @@ impl RApp {
             sink.play();
 
             loop {
-                match reciever.recv_timeout(Duration::from_millis(5)) {
-                    Ok(action) => match action {
+                if let Ok(action) =  reciever.recv_timeout(Duration::from_millis(5)) {
+                    match action {
                         Actions::Back => {
                             let mut i = t_i.lock().unwrap();
 
                             if *i != 0 {
-                                *i = *i - 1;
+                                *i -= 1;
                                 let source = make_source(&t_songs[*i].path).unwrap();
                                 sink.append(source);
                                 sink.skip_one();
@@ -129,7 +129,7 @@ impl RApp {
                             if looping && (*i + 1) == t_songs.len() {
                                 *i = 0;
                             } else if *i < t_songs.len() - 1 {
-                                *i = *i + 1;
+                                *i += 1;
                             }
                             let source = make_source(&t_songs[*i].path).unwrap();
                             sink.append(source);
@@ -141,9 +141,8 @@ impl RApp {
                         Actions::NoLoop => looping = false,
                         Actions::Paused => sink.pause(),
                         Actions::Playing => sink.play(),
-                    },
-                    Err(_) => {} // assuming its just a timeout error and not something else
-                }
+                    }
+                };
 
                 if sink.len() == 0 {
 
@@ -260,24 +259,24 @@ impl Widget for &RApp {
 
         let l2 = Line::from(vec![
             "By: ".into(),
-            self.current_playing.artist.clone().yellow().into(),
+            self.current_playing.artist.clone().yellow(),
         ]);
 
         let l3 = Line::from(vec![
             "Looping: ".into(),
             if self.song_repeat {
-                "SONG".yellow().into()
+                "SONG".yellow()
             } else if self.looping {
-                "LIB".yellow().into()
+                "LIB".yellow()
             } else {
-                "OFF".yellow().into()
+                "OFF".yellow()
             },
         ]);
 
         let l4 = Line::from(vec![if self.is_playing {
-            "Playing".yellow().into()
+            "Playing".yellow()
         } else {
-            "Paused".yellow().into()
+            "Paused".yellow()
         }]);
 
 

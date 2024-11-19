@@ -11,3 +11,6 @@ next one
 - [ ] Add Build Library function (i.e, give it a file path to a library, then download all the songs in it)
 - [ ] Test on windows :(
 - [ ] Comments comments comments !!!!!!!!
+- [ ] Fill empty space while music playing (prob a progress bar)
+- [ ] Add export library function (i.e, print the current library or write it to given file)
+- [ ] Add homenv dependency
