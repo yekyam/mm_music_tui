@@ -1,11 +1,10 @@
-# Music_tui
-
-(yes i know i built one in go but i swr this is different)
+# MM_Music_tui
 
 ## Features
 - Plays music
-    -While playing music, allows you to do basic command line things (like ls (does not do globbing nor strings correctly))
+  - Has basic control features, like play/pause, skip forward/skip back, loop library, repeat song
 - Adds music
+  - If yt-dlp is installed, will download songs via URL
 - Lists music
 - Deletes music
 - Saves everything to `~/.music_library` for ease of use 

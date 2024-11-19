@@ -637,7 +637,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "music_tui"
+name = "mm_music_tui"
 version = "0.1.0"
 dependencies = [
  "clap",
