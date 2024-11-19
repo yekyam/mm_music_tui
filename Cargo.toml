@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Manuel <yekayama@gmail.com>"]
 description = "A simple music TUI application. Supports a basic library stored in the home directory, downloads songs via yt-dlp, and has a TUI while playing"
+license = "MIT"
 
 [dependencies]
 clap = { version = "4.5.20", features = ["derive"] }
