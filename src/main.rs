@@ -18,7 +18,7 @@ use std::sync::mpsc::channel;
 use std::{env, fs, io};
 use std::{fs::File, time::Duration};
 use std::{
-    io::{BufReader, Write},
+    io::BufReader,
     sync::{Arc, Mutex},
 };
 
@@ -50,6 +50,7 @@ pub struct RApp {
     current_playing: Song,
     exit: bool,
     looping: bool,
+    song_repeat: bool,
     is_playing: bool,
 }
 
@@ -59,6 +60,8 @@ enum Actions {
     Skip,
     Back,
     Loop,
+    RepeatSong,
+    NoRepeat,
     NoLoop,
 }
 
@@ -99,7 +102,10 @@ impl RApp {
         let t_songs = songs.clone();
         let t_i = i_original.clone();
         std::thread::spawn(move || {
+
             let mut looping = false;
+            let mut repeat_song = false;
+
             let source = make_source(&t_songs[*t_i.lock().unwrap()].path).unwrap();
             sink.append(source);
             sink.play();
@@ -129,6 +135,8 @@ impl RApp {
                             sink.append(source);
                             sink.skip_one();
                         }
+                        Actions::RepeatSong => repeat_song = true,
+                        Actions::NoRepeat => repeat_song = false,
                         Actions::Loop => looping = true,
                         Actions::NoLoop => looping = false,
                         Actions::Paused => sink.pause(),
@@ -138,7 +146,17 @@ impl RApp {
                 }
 
                 if sink.len() == 0 {
+
                     let mut i = t_i.lock().unwrap();
+
+                    if repeat_song {
+
+                        let source = make_source(&t_songs[*i].path).unwrap();
+                        sink.append(source);
+                        sink.play();
+                        continue;
+
+                    }
 
                     *i += 1;
 
@@ -188,6 +206,14 @@ impl RApp {
                                     sender.send(Actions::NoLoop).unwrap();
                                 }
                             }
+                            KeyCode::Char('r') => {
+                                self.song_repeat = !self.song_repeat;
+                                if self.song_repeat {
+                                    sender.send(Actions::RepeatSong).unwrap();
+                                } else {
+                                    sender.send(Actions::NoRepeat).unwrap();
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -219,6 +245,8 @@ impl Widget for &RApp {
             "<Q>".blue().bold(),
             " Loop ".into(),
             "<L>".blue().bold(),
+            " Repeat Song ".into(),
+            "<R>".blue().bold(),
         ]);
         let block = Block::bordered()
             .title(title.centered())
@@ -229,23 +257,29 @@ impl Widget for &RApp {
             "Playing: ".into(),
             self.current_playing.name.clone().into(),
         ]);
+
         let l2 = Line::from(vec![
             "By: ".into(),
             self.current_playing.artist.clone().yellow().into(),
         ]);
+
         let l3 = Line::from(vec![
             "Looping: ".into(),
-            if self.looping {
+            if self.song_repeat {
+                "SONG".yellow().into()
+            } else if self.looping {
                 "LIB".yellow().into()
             } else {
                 "OFF".yellow().into()
             },
         ]);
+
         let l4 = Line::from(vec![if self.is_playing {
             "Playing".yellow().into()
         } else {
             "Paused".yellow().into()
         }]);
+
 
         let song_text = Text::from(vec![l1, l2, l3, l4]);
 
@@ -278,120 +312,6 @@ impl Library {
 
     fn add(&mut self, song: Song) {
         self.songs.push(song);
-    }
-
-    fn play_w_shell(&self) {
-        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let sink = Sink::try_new(&stream_handle).unwrap();
-        sink.pause();
-
-        println!("Loading library...");
-        for s in &self.songs {
-            let f = match File::open(&s.path) {
-                Ok(f) => f,
-                Err(_) => {
-                    println!("\tCouldn't open file: `{}`; skipping", s.path);
-                    continue;
-                }
-            };
-
-            let buf = BufReader::new(f);
-
-            let source = Decoder::new(buf).unwrap();
-            sink.append(source);
-        }
-        println!("Library loaded;");
-        sink.play();
-
-        let mut playing = true;
-        let mut looping = false;
-
-        loop {
-            if sink.len() == 0 {
-                break;
-            }
-            print!(
-                "[Playing: {}] {} > ",
-                self.songs[self.songs.len() - sink.len()].name,
-                env::current_dir()
-                    .unwrap()
-                    .into_os_string()
-                    .into_string()
-                    .unwrap()
-            );
-            io::stdout().flush().unwrap();
-            let mut line = String::new();
-            match io::stdin().read_line(&mut line) {
-                Ok(_) => {}
-                Err(e) => {
-                    println!("ERROR: couldn't read line from stdin!; {e}");
-                }
-            }
-
-            let tokens: Vec<&str> = line.split_whitespace().collect();
-
-            if tokens.len() == 0 {
-                // println!("In tokens");
-                continue;
-            }
-
-            match tokens[0] {
-                "p" => {
-                    playing = !playing;
-                    if playing {
-                        println!("\tplaying");
-                        sink.play();
-                    } else {
-                        println!("\tnot playing");
-                        sink.pause();
-                    }
-                }
-                "s" => {
-                    sink.skip_one();
-                }
-                "l" => {
-                    looping = !looping;
-                    if looping {
-                        println!("\tlooping");
-                    } else {
-                        println!("\tnot looping");
-                    }
-                }
-                "cd" => {
-                    if tokens.len() != 2 {
-                        println!("enter a directory");
-                    } else {
-                        match env::set_current_dir(tokens[1]) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                eprintln!("{e}");
-                            }
-                        }
-                    }
-                }
-                "q" => {
-                    println!("quitting...");
-                    exit(0);
-                }
-                _ => match Command::new("fish").arg("--command").arg(line).output() {
-                    Ok(o) => {
-                        println!(
-                            "{}{}",
-                            String::from_utf8(o.stdout)
-                                .expect("WARN: Couldn't convert stdout to string!"),
-                            String::from_utf8(o.stderr)
-                                .expect("WARN: Couldn't convert stderr to string!")
-                        );
-                    }
-                    Err(e) => {
-                        println!("Couldn't execute command!; {e}");
-                    }
-                },
-            }
-        }
-        if looping {
-            self.play_w_shell();
-        }
     }
 }
 
@@ -483,10 +403,7 @@ enum Commands {
     List {},
 
     // Plays the songs in the library
-    Play {
-        #[arg(long)]
-        with_tui: bool,
-    },
+    Play {},
 
     // Deletes the specified song in the library
     Delete {
@@ -554,20 +471,17 @@ fn main() {
                 println!("\t{}. {} - {}", i, s.name, s.artist);
             }
         }
-        Commands::Play { with_tui } => {
+        Commands::Play {} => {
             // todo!("do the play features");
-            if *with_tui {
-                let mut terminal = ratatui::init();
-                match RApp::default().run(&library.songs, &mut terminal) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        println!("error running stuff!; {e}");
-                    }
+            let mut terminal = ratatui::init();
+            match RApp::default().run(&library.songs, &mut terminal) {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("error running stuff!; {e}");
                 }
-                ratatui::restore();
-            } else {
-                library.play_w_shell();
             }
+            ratatui::restore();
+
         }
         Commands::Delete { name } => {
             println!("Delete from list: {name}");
