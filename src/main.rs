@@ -66,12 +66,7 @@ enum Actions {
 }
 
 fn make_source(path: &str) -> Option<Decoder<BufReader<File>>> {
-    let f = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => {
-            return None;
-        }
-    };
+    let f = File::open(path).ok()?;
 
     let buf = BufReader::new(f);
 
@@ -84,8 +79,9 @@ impl RApp {
     }
 
     fn run(&mut self, songs: &[Song], terminal: &mut DefaultTerminal) -> io::Result<()> {
-        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let sink = Sink::try_new(&stream_handle).unwrap();
+        let (_stream, stream_handle) =
+            OutputStream::try_default().expect("couldn't create audio stream!");
+        let sink = Sink::try_new(&stream_handle).expect("couldn't create sink!");
 
         sink.play();
 
@@ -102,7 +98,6 @@ impl RApp {
         let t_songs = songs.clone();
         let t_i = i_original.clone();
         std::thread::spawn(move || {
-
             let mut looping = false;
             let mut repeat_song = false;
 
@@ -111,7 +106,7 @@ impl RApp {
             sink.play();
 
             loop {
-                if let Ok(action) =  reciever.recv_timeout(Duration::from_millis(5)) {
+                if let Ok(action) = reciever.recv_timeout(Duration::from_millis(5)) {
                     match action {
                         Actions::Back => {
                             let mut i = t_i.lock().unwrap();
@@ -145,16 +140,13 @@ impl RApp {
                 };
 
                 if sink.len() == 0 {
-
                     let mut i = t_i.lock().unwrap();
 
                     if repeat_song {
-
                         let source = make_source(&t_songs[*i].path).unwrap();
                         sink.append(source);
                         sink.play();
                         continue;
-
                     }
 
                     *i += 1;
@@ -279,7 +271,6 @@ impl Widget for &RApp {
             "Paused".yellow()
         }]);
 
-
         let song_text = Text::from(vec![l1, l2, l3, l4]);
 
         // let chunks = Layout::default()
@@ -315,52 +306,34 @@ impl Library {
 }
 
 fn get_library(dir_path: &Path) -> Result<Library, ()> {
-    let data = match fs::read_to_string(dir_path.join("library.json")) {
-        Ok(s) => s,
-        Err(e) => {
-            println!("WARN: Couldn't read library!; {e}");
-            return Err(());
-        }
-    };
+    let data = fs::read_to_string(dir_path.join("library.json")).map_err(|e| {
+        println!("WARN: Couldn't read library!; {e}");
+    })?;
 
-    let lib: Library = match serde_json::from_str(&data) {
-        Ok(l) => l,
-        Err(e) => {
-            println!("ERRORR: Couldn't convert from string to JSON; {e}");
-            return Err(());
-        }
-    };
+    let lib: Library = serde_json::from_str(&data).map_err(|e| {
+        println!("ERROR: Couldn't convertt strng to JSON; {e}");
+    })?;
+
     Ok(lib)
 }
 
-fn get_library_or_create_new_one(dir_path: &Path) -> Result<Library, ()> {
-    let res = get_library(dir_path);
-
-    match res {
-        Ok(l) => Ok(l),
-        Err(_) => {
-            println!("Creating new library");
-            Ok(Library::new())
-        }
-    }
+fn get_library_or_create_new_one(dir_path: &Path) -> Library {
+    get_library(dir_path).unwrap_or_else(|_| {
+        println!("Creating new library!");
+        Library::new()
+    })
 }
 
 fn write_library_to_file(library: &Library, dir_path: &Path) -> Result<(), ()> {
-    let j = match serde_json::to_string(library) {
-        Ok(j) => j,
-        Err(e) => {
-            println!("FATAL: woahhh couldn't convert library to string; {e}");
-            return Err(());
-        }
-    };
+    let j = serde_json::to_string(library).map_err(|e| {
+        println!("FATAL: woahh couldn't convert library to string; {e}");
+    })?;
 
-    match fs::write(dir_path.join("library.json"), j) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            println!("FATAL: woahhh couldn't write library to file; {e}");
-            Err(())
-        }
-    }
+    fs::write(dir_path.join("library.json"), j).map_err(|e| {
+        println!("FATAL: woahh couldn't write library to file; {e}");
+    })?;
+
+    Ok(())
 }
 
 fn download_song(url: &str, song_name: &str, dir_path: &Path) -> Result<PathBuf, ()> {
@@ -375,25 +348,21 @@ fn download_song(url: &str, song_name: &str, dir_path: &Path) -> Result<PathBuf,
             .arg("-o")
             .arg(&filename)
             .output()
-    };
-
-    match output {
-        Ok(s) => {
-            println!(
-                "{}\n{}",
-                String::from_utf8(s.stdout).expect("WARN: Couldn't convert stdout to string!"),
-                String::from_utf8(s.stderr).expect("WARN: Couldn't convert stderr to string!")
-            );
-            if s.status.success() {
-                return Ok(filename);
-            }
-            Err(())
-        }
-        Err(e) => {
-            println!("ERROR: couldn't run command; {e}");
-            Err(())
-        }
     }
+    .map_err(|e| {
+        println!("EROR: couldn't run command; {e}");
+    })?;
+
+    println!(
+        "{}\n{}",
+        String::from_utf8(output.stdout).expect("WARN: Couldn't convert stdout to string!"),
+        String::from_utf8(output.stderr).expect("WARN: Couldn't convert stderr to string!")
+    );
+
+    if output.status.success() {
+        return Ok(filename);
+    }
+    Err(())
 }
 
 #[derive(Subcommand, Debug)]
@@ -437,12 +406,14 @@ struct App {
     commands: Commands,
 }
 
-fn main() {
+fn main() -> Result<(), ()> {
     let args = App::parse();
 
     // let dir_path = Path::new(".music_library");
     #[allow(deprecated)]
-    let dir_path = env::home_dir().unwrap().join(".music_library");
+    let dir_path = env::home_dir()
+        .expect("couldn't get home dir!")
+        .join(".music_library");
 
     match std::fs::create_dir_all(&dir_path) {
         Ok(_) => {}
@@ -451,13 +422,7 @@ fn main() {
         }
     }
 
-    let mut library = match get_library_or_create_new_one(&dir_path) {
-        Ok(l) => l,
-        Err(_) => {
-            println!("ERROR: woahhhh couldn't get library");
-            exit(1);
-        }
-    };
+    let mut library = get_library_or_create_new_one(&dir_path);
 
     match &args.commands {
         Commands::List {} => {
@@ -472,15 +437,26 @@ fn main() {
         }
         Commands::Play {} => {
             // todo!("do the play features");
-            let mut terminal = ratatui::init();
-            match RApp::default().run(&library.songs, &mut terminal) {
-                Ok(_) => {}
-                Err(e) => {
-                    println!("error running stuff!; {e}");
-                }
+            //
+            if library.songs.is_empty() {
+                println!("no songs in library; try `mm_music_tui add`");
+                return Ok(());
             }
-            ratatui::restore();
+            let mut terminal = ratatui::init();
+            //match RApp::default().run(&library.songs, &mut terminal) {
+            //    Ok(_) => {}
+            //    Err(e) => {A
+            //        println!("error running stuff!; {e}");
+            //    }
+            //}
 
+            let _ = RApp::default()
+                .run(&library.songs, &mut terminal)
+                .map_err(|e| {
+                    println!("error running stuff! {e}");
+                });
+
+            ratatui::restore();
         }
         Commands::Delete { name } => {
             println!("Delete from list: {name}");
@@ -501,24 +477,37 @@ fn main() {
             location,
         } => {
             if location.contains("http") {
-                match download_song(location, name, &dir_path) {
-                    Ok(path) => {
-                        let s = Song {
-                            artist: artist.clone(),
-                            path: path
-                                .into_os_string()
-                                .into_string()
-                                .expect("ERROR: couldn't convert pathh into valid string!"),
-                            name: name.clone(),
-                        };
-                        library.add(s);
-                    }
-                    Err(_) => {
-                        println!("Couldn't download song!");
-                    }
-                }
+                let path = download_song(location, name, &dir_path).map_err(|_| {
+                    println!("Couldn't download song!");
+                })?;
+
+                let s = Song {
+                    artist: artist.clone(),
+                    path: path
+                        .into_os_string()
+                        .into_string()
+                        .expect("ERROR: couldn't convert pathh into valid string!"),
+                    name: name.clone(),
+                };
+
+                library.add(s);
             } else {
-                todo!("I'm too lazy to implement file copying stuff lol my bad");
+                let new_path = dir_path.join(name.replace(" ", "_") + ".mp3");
+
+                std::fs::rename(location, &new_path).map_err(|e| {
+                    println!("couldn't move file!; {e}");
+                })?;
+
+                let s = Song {
+                    artist: artist.clone(),
+                    path: new_path
+                        .into_os_string()
+                        .into_string()
+                        .expect("ERROR: couldn't convert path into valid string!"),
+                    name: name.clone(),
+                };
+
+                library.add(s);
             }
             match write_library_to_file(&library, &dir_path) {
                 Ok(_) => {
@@ -533,4 +522,5 @@ fn main() {
             println!("Rename: {name}\t{rename}");
         }
     };
+    Ok(())
 }
