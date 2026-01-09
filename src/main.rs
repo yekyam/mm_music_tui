@@ -48,6 +48,7 @@ struct Library {
 #[derive(Default)]
 pub struct RApp {
     current_playing: Song,
+    current_volume: i32,
     exit: bool,
     looping: bool,
     song_repeat: bool,
@@ -55,6 +56,8 @@ pub struct RApp {
 }
 
 enum Actions {
+    VolumeDown,
+    VolumeUp,
     Playing,
     Paused,
     Skip,
@@ -93,10 +96,13 @@ impl RApp {
 
         let (sender, reciever) = channel();
         let i_original = Arc::new(Mutex::new(0));
+        let song_volume = Arc::new(Mutex::new(10i32));
 
-        // thrread vars
+        // thread vars
         let t_songs = songs.clone();
         let t_i = i_original.clone();
+        let t_song_volume = song_volume.clone();
+
         std::thread::spawn(move || {
             let mut looping = false;
             let mut repeat_song = false;
@@ -108,6 +114,22 @@ impl RApp {
             loop {
                 if let Ok(action) = reciever.recv_timeout(Duration::from_millis(5)) {
                     match action {
+                        Actions::VolumeDown => {
+                            let mut song_volume = t_song_volume.lock().unwrap();
+
+                            if *song_volume > 0 {
+                                *song_volume -= 1;
+                                sink.set_volume((*song_volume as f32) / 10.0);
+                            }
+                        }
+                        Actions::VolumeUp => {
+                            let mut song_volume = t_song_volume.lock().unwrap();
+
+                            if *song_volume < 10 {
+                                *song_volume += 1;
+                                sink.set_volume((*song_volume as f32) / 10.0);
+                            }
+                        }
                         Actions::Back => {
                             let mut i = t_i.lock().unwrap();
 
@@ -168,6 +190,7 @@ impl RApp {
 
         while !self.exit {
             self.current_playing = songs[*i_original.lock().unwrap()].clone();
+            self.current_volume = *(song_volume.lock().unwrap());
             terminal.draw(|frame| self.draw(frame))?;
             // self.handle_events()?;
             if event::poll(Duration::from_millis(5))? {
@@ -175,6 +198,12 @@ impl RApp {
                     Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
                         match key_event.code {
                             KeyCode::Char('q') => self.exit(),
+                            KeyCode::Down => {
+                                sender.send(Actions::VolumeDown).unwrap();
+                            }
+                            KeyCode::Up => {
+                                sender.send(Actions::VolumeUp).unwrap();
+                            }
                             KeyCode::Left => {
                                 sender.send(Actions::Back).unwrap();
                             }
@@ -238,6 +267,10 @@ impl Widget for &RApp {
             "<L>".blue().bold(),
             " Repeat Song ".into(),
             "<R>".blue().bold(),
+            " Volume Up ".into(),
+            "<Up>".blue().bold(),
+            " Volume Down ".into(),
+            "<Down>".blue().bold(),
         ]);
         let block = Block::bordered()
             .title(title.centered())
@@ -271,7 +304,12 @@ impl Widget for &RApp {
             "Paused".yellow()
         }]);
 
-        let song_text = Text::from(vec![l1, l2, l3, l4]);
+        let l5 = Line::from(vec![
+            "Volume: ".into(),
+            self.current_volume.to_string().yellow(),
+        ]);
+
+        let song_text = Text::from(vec![l1, l2, l3, l4, l5]);
 
         // let chunks = Layout::default()
         //     .direction(Direction::Vertical)
@@ -450,11 +488,14 @@ fn main() -> Result<(), ()> {
             //    }
             //}
 
-            let _ = RApp::default()
-                .run(&library.songs, &mut terminal)
-                .map_err(|e| {
-                    println!("error running stuff! {e}");
-                });
+            let _ = RApp {
+                current_volume: 10i32,
+                ..RApp::default()
+            }
+            .run(&library.songs, &mut terminal)
+            .map_err(|e| {
+                println!("error running stuff! {e}");
+            });
 
             ratatui::restore();
         }
