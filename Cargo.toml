@@ -1,6 +1,6 @@
 [package]
 name = "mm_music_tui"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2021"
 authors = ["Manuel <yekayama@gmail.com>"]
 description = "A simple music TUI application. Supports a basic library stored in the home directory, downloads songs via yt-dlp, and has a TUI while playing"
